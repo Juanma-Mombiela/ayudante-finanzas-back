@@ -16,15 +16,28 @@ SCRAPING_URLS = [
     "https://billeterasvirtuales.com.ar/",
 ]
 
+TARGET_WALLETS = {
+    "mercado_pago": {"name": "Mercado Pago", "aliases": ["mercado pago"]},
+    "uala": {"name": "Ualá", "aliases": ["uala", "ualá"]},
+    "naranja_x": {"name": "Naranja X", "aliases": ["naranja x", "naranjax"]},
+    "personal_pay": {"name": "Personal Pay", "aliases": ["personal pay", "personalpay"]},
+}
 
-def get_mercado_pago_rate_candidates():
-    """Return Mercado Pago rates from ArgentinaDatos first; fallback to HTML scraping sites."""
+
+def get_wallet_rate_candidates(wallet_id: str):
+    """Return wallet rates from ArgentinaDatos first; fallback to HTML scraping sites."""
+    wallet_config = TARGET_WALLETS.get(wallet_id)
+    if not wallet_config:
+        return [], [{"wallet": wallet_id, "source": "internal", "status": "error", "error": "wallet_id no soportado"}]
+
+    aliases = wallet_config["aliases"]
     rates = []
 
-    argentina_datos_result = _fetch_rate_from_argentina_datos()
+    argentina_datos_result = _fetch_rate_from_argentina_datos(wallet_id, aliases)
     if argentina_datos_result["status"] == "ok":
         rates.append(
             {
+                "wallet": wallet_id,
                 "source": argentina_datos_result["source"],
                 "tna": argentina_datos_result["tna"],
                 "method": "argentinadatos",
@@ -35,15 +48,22 @@ def get_mercado_pago_rate_candidates():
     source_reports = [argentina_datos_result]
 
     for url in SCRAPING_URLS:
-        scraped = _scrape_mercado_pago_rate_from_html(url)
+        scraped = _scrape_wallet_rate_from_html(url, wallet_id, aliases)
         source_reports.append(scraped)
         if scraped["status"] == "ok":
-            rates.append({"source": url, "tna": scraped["tna"], "method": "scraping"})
+            rates.append(
+                {
+                    "wallet": wallet_id,
+                    "source": url,
+                    "tna": scraped["tna"],
+                    "method": "scraping",
+                }
+            )
 
     return rates, source_reports
 
 
-def _fetch_rate_from_argentina_datos():
+def _fetch_rate_from_argentina_datos(wallet_id: str, aliases):
     urls = []
     if ARGENTINA_DATOS_WALLETS_URL:
         urls.append(ARGENTINA_DATOS_WALLETS_URL)
@@ -52,18 +72,20 @@ def _fetch_rate_from_argentina_datos():
     for url in urls:
         try:
             payload = _http_get_json(url)
-            tna = _extract_mercado_pago_rate_from_payload(payload)
+            tna = _extract_rate_from_payload(payload, aliases)
             if tna is not None:
-                return {"source": url, "status": "ok", "tna": tna}
+                return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
             return {
+                "wallet": wallet_id,
                 "source": url,
                 "status": "error",
-                "error": "Mercado Pago no encontrado en payload JSON",
+                "error": f"{wallet_id} no encontrado en payload JSON",
             }
         except Exception as exc:
             last_error = str(exc)
 
     return {
+        "wallet": wallet_id,
         "source": ARGENTINA_DATOS_WALLETS_URL or "argentinadatos:candidates",
         "status": "error",
         "error": last_error if "last_error" in locals() else "Sin endpoint configurado",
@@ -94,7 +116,7 @@ def _http_get_text(url: str):
         return response.read().decode("utf-8", errors="ignore")
 
 
-def _extract_mercado_pago_rate_from_payload(payload):
+def _extract_rate_from_payload(payload, aliases):
     rows = _flatten_payload(payload)
     for row in rows:
         if not isinstance(row, dict):
@@ -102,7 +124,9 @@ def _extract_mercado_pago_rate_from_payload(payload):
         name = _first_non_empty(row, ["name", "wallet", "billetera", "entidad", "proveedor"])
         if not name:
             continue
-        if "mercado" in str(name).lower() and "pago" in str(name).lower():
+
+        name_lower = str(name).lower()
+        if any(alias in name_lower for alias in aliases):
             rate = _parse_float(
                 _first_non_empty(
                     row,
@@ -131,36 +155,33 @@ def _flatten_payload(payload):
     return []
 
 
-def _scrape_mercado_pago_rate_from_html(url: str):
+def _scrape_wallet_rate_from_html(url: str, wallet_id: str, aliases):
     try:
         html = _http_get_text(url)
     except Exception as exc:
-        return {"source": url, "status": "error", "error": str(exc)}
+        return {"wallet": wallet_id, "source": url, "status": "error", "error": str(exc)}
 
     normalized = re.sub(r"\s+", " ", html)
     lower = normalized.lower()
 
-    matches = list(re.finditer(r"mercado\s*pago", lower))
-    if not matches:
-        return {"source": url, "status": "error", "error": "Mercado Pago no encontrado"}
-
     candidates = []
-    for match in matches:
-        start = max(0, match.start() - 180)
-        end = min(len(normalized), match.end() + 260)
-        chunk = normalized[start:end]
-
-        for number in re.findall(r"(\d{1,3}(?:[\.,]\d{1,2})?)\s*%", chunk):
-            value = _parse_float(number)
-            if value is not None and 1 <= value <= 300:
-                candidates.append(value)
+    for alias in aliases:
+        matches = list(re.finditer(re.escape(alias), lower))
+        for match in matches:
+            start = max(0, match.start() - 220)
+            end = min(len(normalized), match.end() + 320)
+            chunk = normalized[start:end]
+            for number in re.findall(r"(\d{1,3}(?:[\.,]\d{1,2})?)\s*%", chunk):
+                value = _parse_float(number)
+                if value is not None and 1 <= value <= 300:
+                    candidates.append(value)
 
     if not candidates:
-        return {"source": url, "status": "error", "error": "No se encontró tasa porcentual"}
+        return {"wallet": wallet_id, "source": url, "status": "error", "error": "No se encontró tasa porcentual"}
 
-    # pick smallest plausible around MP within the snippet to avoid unrelated big numbers
+    # Most pages repeat values; taking min in local context tends to avoid unrelated percentages.
     tna = min(candidates)
-    return {"source": url, "status": "ok", "tna": tna}
+    return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
 
 
 def _first_non_empty(payload, keys):
