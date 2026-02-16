@@ -33,10 +33,17 @@ venv\Scripts\activate      # (Windows)
 pip install -r requirements.txt
 ```
 
+
 ### 3️⃣ Crear archivo `.env`
 ```bash
 MONGO_URI=mongodb+srv://usuario:password@cluster.mongodb.net/comparador
 DB_NAME=comparador_tasas
+
+# Opcional: fuente JSON externa (ej. ArgentinaDatos)
+ARGENTINA_DATOS_WALLETS_URL=
+
+# Opcional: múltiples endpoints JSON separados por coma
+EXTERNAL_WALLET_SOURCES=
 ```
 
 ### 4️⃣ Ejecutar el servidor localmente
@@ -96,6 +103,24 @@ Ejemplo de respuesta `/wallets`:
   }
 ]
 ```
+
+---
+
+
+## 🌐 Estrategia de fuentes (API + scraping)
+
+El backend soporta una estrategia **híbrida**:
+
+1. Fuentes base internas (Mercado Pago/Ualá).
+2. Fuentes externas en formato JSON (por ejemplo, un endpoint de ArgentinaDatos).
+3. Próximamente: scrapers HTML para sitios comparativos como `comparatasas.ar`, `billeterasvirtuales.com.ar` y `rendimientohoy.vercel.app`.
+
+Para usar una fuente externa, definir su URL en:
+
+- `ARGENTINA_DATOS_WALLETS_URL` para una fuente principal.
+- `EXTERNAL_WALLET_SOURCES` para una lista separada por coma.
+
+> Nota: al integrar scraping de terceros, validar Términos de Uso, `robots.txt` y frecuencia de requests para evitar bloqueos.
 
 ---
 
