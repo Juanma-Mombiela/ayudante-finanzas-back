@@ -1,37 +1,98 @@
-import datetime
 import json
 import re
 from urllib.request import Request, urlopen
 
+from app.config import ARGENTINA_DATOS_WALLETS_URL
 
-def scrape_mercado_pago():
+ARGENTINA_DATOS_CANDIDATE_URLS = [
+    "https://api.argentinadatos.com/v1/finanzas/billeteras",
+    "https://api.argentinadatos.com/v1/finanzas/billeteras-virtuales",
+    "https://api.argentinadatos.com/v1/finanzas/tasas-billeteras",
+]
+
+SCRAPING_URLS = [
+    "https://comparatasas.ar/cuentas-billeteras",
+    "https://rendimientohoy.vercel.app/",
+    "https://billeterasvirtuales.com.ar/",
+]
+
+TARGET_WALLETS = {
+    "mercado_pago": {"name": "Mercado Pago", "aliases": ["mercado pago"]},
+    "uala": {"name": "Ualá", "aliases": ["uala", "ualá"]},
+    "naranja_x": {"name": "Naranja X", "aliases": ["naranja x", "naranjax"]},
+    "personal_pay": {"name": "Personal Pay", "aliases": ["personal pay", "personalpay"]},
+}
+
+
+def get_wallet_rate_candidates(wallet_id: str):
+    """Return wallet rates from ArgentinaDatos first; fallback to HTML scraping sites."""
+    wallet_config = TARGET_WALLETS.get(wallet_id)
+    if not wallet_config:
+        return [], [{"wallet": wallet_id, "source": "internal", "status": "error", "error": "wallet_id no soportado"}]
+
+    aliases = wallet_config["aliases"]
+    rates = []
+
+    argentina_datos_result = _fetch_rate_from_argentina_datos(wallet_id, aliases)
+    if argentina_datos_result["status"] == "ok":
+        rates.append(
+            {
+                "wallet": wallet_id,
+                "source": argentina_datos_result["source"],
+                "tna": argentina_datos_result["tna"],
+                "method": "argentinadatos",
+            }
+        )
+        return rates, [argentina_datos_result]
+
+    source_reports = [argentina_datos_result]
+
+    for url in SCRAPING_URLS:
+        scraped = _scrape_wallet_rate_from_html(url, wallet_id, aliases)
+        source_reports.append(scraped)
+        if scraped["status"] == "ok":
+            rates.append(
+                {
+                    "wallet": wallet_id,
+                    "source": url,
+                    "tna": scraped["tna"],
+                    "method": "scraping",
+                }
+            )
+
+    return rates, source_reports
+
+
+def _fetch_rate_from_argentina_datos(wallet_id: str, aliases):
+    urls = []
+    if ARGENTINA_DATOS_WALLETS_URL:
+        urls.append(ARGENTINA_DATOS_WALLETS_URL)
+    urls.extend(ARGENTINA_DATOS_CANDIDATE_URLS)
+
+    for url in urls:
+        try:
+            payload = _http_get_json(url)
+            tna = _extract_rate_from_payload(payload, aliases)
+            if tna is not None:
+                return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
+            return {
+                "wallet": wallet_id,
+                "source": url,
+                "status": "error",
+                "error": f"{wallet_id} no encontrado en payload JSON",
+            }
+        except Exception as exc:
+            last_error = str(exc)
+
     return {
-        "id": "mercado_pago",
-        "name": "Mercado Pago",
-        "tna": 54.2,
-        "max_amount": 2000000,
-        "currency": "ARS",
-        "category": "cuenta_remunerada",
-        "updated_at": datetime.datetime.utcnow(),
-        "source": "https://mercadopago.com.ar",
+        "wallet": wallet_id,
+        "source": ARGENTINA_DATOS_WALLETS_URL or "argentinadatos:candidates",
+        "status": "error",
+        "error": last_error if "last_error" in locals() else "Sin endpoint configurado",
     }
 
 
-def scrape_uala():
-    return {
-        "id": "uala",
-        "name": "Ualá",
-        "tna": 55.0,
-        "max_amount": 500000,
-        "currency": "ARS",
-        "category": "cuenta_remunerada",
-        "updated_at": datetime.datetime.utcnow(),
-        "source": "https://uala.com.ar",
-    }
-
-
-def fetch_wallets_from_json_source(url: str):
-    """Fetch wallet rates from a public JSON endpoint and normalize to Wallet schema."""
+def _http_get_json(url: str):
     request = Request(
         url,
         headers={
@@ -39,62 +100,88 @@ def fetch_wallets_from_json_source(url: str):
             "Accept": "application/json,text/plain,*/*",
         },
     )
-
     with urlopen(request, timeout=15) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        return json.loads(response.read().decode("utf-8"))
 
-    rows = _extract_rows(payload)
-    normalized = []
 
+def _http_get_text(url: str):
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; comparador-tasas-bot/1.0)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    with urlopen(request, timeout=15) as response:
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def _extract_rate_from_payload(payload, aliases):
+    rows = _flatten_payload(payload)
     for row in rows:
-        wallet = _normalize_wallet_row(row, fallback_source=url)
-        if wallet:
-            normalized.append(wallet)
+        if not isinstance(row, dict):
+            continue
+        name = _first_non_empty(row, ["name", "wallet", "billetera", "entidad", "proveedor"])
+        if not name:
+            continue
 
-    return normalized
+        name_lower = str(name).lower()
+        if any(alias in name_lower for alias in aliases):
+            rate = _parse_float(
+                _first_non_empty(
+                    row,
+                    ["tna", "tea", "rate", "tasa", "tasa_nominal_anual", "rendimiento"],
+                )
+            )
+            if rate is not None:
+                return rate
+    return None
 
 
-def _extract_rows(payload):
+def _flatten_payload(payload):
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
         for key in ("data", "results", "wallets", "items"):
-            if isinstance(payload.get(key), list):
-                return payload[key]
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        nested_rows = []
+        for value in payload.values():
+            if isinstance(value, list):
+                nested_rows.extend(value)
+        if nested_rows:
+            return nested_rows
     return []
 
 
-def _normalize_wallet_row(row, fallback_source: str):
-    if not isinstance(row, dict):
-        return None
+def _scrape_wallet_rate_from_html(url: str, wallet_id: str, aliases):
+    try:
+        html = _http_get_text(url)
+    except Exception as exc:
+        return {"wallet": wallet_id, "source": url, "status": "error", "error": str(exc)}
 
-    name = _first_non_empty(row, ["name", "wallet", "billetera", "entidad"])
-    if not name:
-        return None
+    normalized = re.sub(r"\s+", " ", html)
+    lower = normalized.lower()
 
-    tna = _parse_float(_first_non_empty(row, ["tna", "rate", "tasa", "tasa_nominal_anual"]))
-    if tna is None:
-        return None
+    candidates = []
+    for alias in aliases:
+        matches = list(re.finditer(re.escape(alias), lower))
+        for match in matches:
+            start = max(0, match.start() - 220)
+            end = min(len(normalized), match.end() + 320)
+            chunk = normalized[start:end]
+            for number in re.findall(r"(\d{1,3}(?:[\.,]\d{1,2})?)\s*%", chunk):
+                value = _parse_float(number)
+                if value is not None and 1 <= value <= 300:
+                    candidates.append(value)
 
-    wallet_id = _first_non_empty(row, ["id", "slug", "wallet_id"]) or _slugify(name)
-    max_amount = _parse_float(_first_non_empty(row, ["max_amount", "tope", "monto_maximo", "cap"]))
-    if max_amount is None:
-        max_amount = 0.0
+    if not candidates:
+        return {"wallet": wallet_id, "source": url, "status": "error", "error": "No se encontró tasa porcentual"}
 
-    currency = _first_non_empty(row, ["currency", "moneda"]) or "ARS"
-    category = _first_non_empty(row, ["category", "tipo"]) or "cuenta_remunerada"
-    source = _first_non_empty(row, ["source", "fuente", "url"]) or fallback_source
-
-    return {
-        "id": wallet_id,
-        "name": name,
-        "tna": float(tna),
-        "max_amount": float(max_amount),
-        "currency": currency,
-        "category": category,
-        "updated_at": datetime.datetime.utcnow(),
-        "source": source,
-    }
+    # Most pages repeat values; taking min in local context tends to avoid unrelated percentages.
+    tna = min(candidates)
+    return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
 
 
 def _first_non_empty(payload, keys):
@@ -116,12 +203,8 @@ def _parse_float(value):
         text = text.replace(".", "").replace(",", ".")
     elif "," in text:
         text = text.replace(",", ".")
+
     try:
         return float(text)
     except ValueError:
         return None
-
-
-def _slugify(value: str):
-    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", value.lower()).strip("_")
-    return cleaned or "wallet"

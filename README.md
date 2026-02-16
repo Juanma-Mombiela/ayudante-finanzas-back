@@ -1,80 +1,60 @@
 # 📘 README - Comparador de Tasas Backend (FastAPI)
 
 ## 🚀 Descripción
-Backend del proyecto **Comparador de Tasas Argentinas**, una API desarrollada con **FastAPI** que centraliza y actualiza información sobre los rendimientos de distintas billeteras virtuales y cuentas remuneradas del país.
+Backend del proyecto **Comparador de Tasas Argentinas**, una API desarrollada con **FastAPI** enfocada actualmente en estas billeteras:
 
-La API expone endpoints públicos para consultar las tasas actualizadas, histórico de rendimientos y estado del sistema. También incluye un servicio de **scraping automatizado** que actualiza los datos periódicamente.
+- Mercado Pago
+- Ualá
+- Naranja X
+- Personal Pay
+
+Estrategia de obtención por billetera:
+1. Intentar primero **ArgentinaDatos** (JSON API).
+2. Si no hay dato usable, hacer fallback con scraping HTML en:
+   - https://comparatasas.ar/cuentas-billeteras
+   - https://rendimientohoy.vercel.app/
+   - https://billeterasvirtuales.com.ar/
+3. Calcular **promedio** de tasas encontradas en fallback.
 
 ---
 
 ## 🧩 Tecnologías principales
-- **FastAPI** → Framework backend
-- **MongoDB Atlas** → Base de datos NoSQL
-- **Requests + BeautifulSoup** → Scraping de tasas
-- **Uvicorn** → Servidor ASGI
-- **python-dotenv** → Manejo de variables de entorno
-- **CORS Middleware** → Comunicación con frontend (Next.js)
+- **FastAPI**
+- **MongoDB Atlas**
+- **urllib + regex** (ingesta JSON + scraping HTML)
+- **Uvicorn**
+- **python-dotenv**
 
 ---
 
 ## ⚙️ Instalación y configuración
 
-### 1️⃣ Clonar el repositorio
+### 1️⃣ Clonar
 ```bash
 git clone https://github.com/tuusuario/comparador-tasas-backend.git
 cd comparador-tasas-backend
 ```
 
-### 2️⃣ Crear entorno virtual e instalar dependencias
+### 2️⃣ Instalar dependencias
 ```bash
 python -m venv venv
-source venv/bin/activate   # (Mac/Linux)
-venv\Scripts\activate      # (Windows)
+source venv/bin/activate   # Mac/Linux
+venv\Scripts\activate      # Windows
 pip install -r requirements.txt
 ```
 
-
-### 3️⃣ Crear archivo `.env`
+### 3️⃣ Configurar `.env`
 ```bash
 MONGO_URI=mongodb+srv://usuario:password@cluster.mongodb.net/comparador
 DB_NAME=comparador_tasas
 
-# Opcional: fuente JSON externa (ej. ArgentinaDatos)
+# Opcional: endpoint específico de ArgentinaDatos
 ARGENTINA_DATOS_WALLETS_URL=
-
-# Opcional: múltiples endpoints JSON separados por coma
-EXTERNAL_WALLET_SOURCES=
 ```
 
-### 4️⃣ Ejecutar el servidor localmente
+### 4️⃣ Correr API
 ```bash
 uvicorn app.main:app --reload
-```
-
-### 5️⃣ Verificar estado
-Abrir en el navegador:
-```
-http://127.0.0.1:8000/status
-```
-Deberías ver: `{ "status": "ok" }`
-
----
-
-## 🗂️ Estructura del proyecto
-```
-comparador-tasas-backend/
-├── app/
-│   ├── main.py              # Punto de entrada FastAPI
-│   ├── config.py            # Variables de entorno
-│   ├── models/              # Modelos Pydantic
-│   ├── routes/              # Endpoints (wallets, status)
-│   ├── services/            # Lógica scraping y actualización
-│   └── utils/               # Helpers, logs, etc.
-├── cron/                    # Scripts automáticos
-├── requirements.txt         # Dependencias
-├── .env                     # Variables de entorno
-├── Dockerfile               # (opcional) Despliegue en contenedor
-└── README.md
 ```
 
 ---
@@ -83,80 +63,57 @@ comparador-tasas-backend/
 
 | Método | Endpoint | Descripción |
 |--------|-----------|--------------|
-| GET | `/wallets` | Devuelve todas las billeteras registradas |
-| GET | `/wallets/{id}` | Devuelve una billetera específica |
-| POST | `/update` | Ejecuta manualmente la actualización de tasas |
+| GET | `/wallets` | Devuelve registros actuales de las 4 billeteras foco |
+| GET | `/wallets/{id}` | Devuelve una billetera por id (`mercado_pago`, `uala`, `naranja_x`, `personal_pay`) |
+| POST | `/update` | Ejecuta actualización (ArgentinaDatos o fallback scraping por billetera) |
+| GET | `/sources/status` | Estado de fuentes (opcional `probe=true`) |
 | GET | `/status` | Verifica que la API esté operativa |
 
-Ejemplo de respuesta `/wallets`:
+Ejemplo `/wallets`:
 ```json
 [
+  {
+    "id": "mercado_pago",
+    "name": "Mercado Pago",
+    "tna": 54.2,
+    "max_amount": 0,
+    "currency": "ARS",
+    "category": "cuenta_remunerada",
+    "updated_at": "2025-10-20T15:00:00Z",
+    "source": "https://comparatasas.ar/cuentas-billeteras"
+  },
   {
     "id": "uala",
     "name": "Ualá",
     "tna": 55.0,
-    "max_amount": 500000,
+    "max_amount": 0,
     "currency": "ARS",
     "category": "cuenta_remunerada",
     "updated_at": "2025-10-20T15:00:00Z",
-    "source": "https://uala.com.ar"
+    "source": "https://rendimientohoy.vercel.app/"
   }
 ]
 ```
 
 ---
 
+## ✅ Validación rápida
 
-## 🌐 Estrategia de fuentes (API + scraping)
-
-El backend soporta una estrategia **híbrida**:
-
-1. Fuentes base internas (Mercado Pago/Ualá).
-2. Fuentes externas en formato JSON (por ejemplo, un endpoint de ArgentinaDatos).
-3. Próximamente: scrapers HTML para sitios comparativos como `comparatasas.ar`, `billeterasvirtuales.com.ar` y `rendimientohoy.vercel.app`.
-
-Para usar una fuente externa, definir su URL en:
-
-- `ARGENTINA_DATOS_WALLETS_URL` para una fuente principal.
-- `EXTERNAL_WALLET_SOURCES` para una lista separada por coma.
-
-> Nota: al integrar scraping de terceros, validar Términos de Uso, `robots.txt` y frecuencia de requests para evitar bloqueos.
+```bash
+curl "http://127.0.0.1:8000/sources/status"
+curl "http://127.0.0.1:8000/sources/status?probe=true"
+curl -X POST "http://127.0.0.1:8000/update?debug=true"
+curl "http://127.0.0.1:8000/wallets"
+```
 
 ---
 
 ## 🔁 Cron Job (opcional)
-Para actualizar las tasas automáticamente cada 6 horas:
 ```bash
 python cron/update_rates.py
 ```
-Este script puede programarse con `cron` o servicios como Railway Scheduler.
-
----
-
-## ☁️ Despliegue
-
-### 🔹 Railway (recomendado)
-1. Crear cuenta en [Railway.app](https://railway.app)
-2. Conectar el repositorio desde GitHub
-3. Configurar variables de entorno (`MONGO_URI`, `DB_NAME`)
-4. Railway levantará automáticamente el servidor Uvicorn.
-
-### 🔹 Docker (opcional)
-```bash
-docker build -t comparador-backend .
-docker run -d -p 8000:8000 comparador-backend
-```
-
----
-
-## 🧠 Próximos pasos
-- Integrar scraping real con HTML dinámico.
-- Agregar histórico de tasas (`/history` endpoint).
-- Integrar con frontend (Next.js).
-- Implementar alertas automáticas por cambios de tasas.
 
 ---
 
 ## ✨ Autor
-Desarrollado por **Juan Manuel Mombiela** — 2025  
-Mentor & Tech Lead Frontend — Proyecto *Ideas para hacer dinero*.
+Desarrollado por **Juan Manuel Mombiela** — 2025.
