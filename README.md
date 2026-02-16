@@ -33,10 +33,17 @@ venv\Scripts\activate      # (Windows)
 pip install -r requirements.txt
 ```
 
+
 ### 3️⃣ Crear archivo `.env`
 ```bash
 MONGO_URI=mongodb+srv://usuario:password@cluster.mongodb.net/comparador
 DB_NAME=comparador_tasas
+
+# Opcional: fuente JSON externa (ej. ArgentinaDatos)
+ARGENTINA_DATOS_WALLETS_URL=
+
+# Opcional: múltiples endpoints JSON separados por coma
+EXTERNAL_WALLET_SOURCES=
 ```
 
 ### 4️⃣ Ejecutar el servidor localmente
@@ -95,6 +102,54 @@ Ejemplo de respuesta `/wallets`:
     "source": "https://uala.com.ar"
   }
 ]
+```
+
+---
+
+
+## 🌐 Estrategia de fuentes (API + scraping)
+
+El backend soporta una estrategia **híbrida**:
+
+1. Fuentes base internas (Mercado Pago/Ualá).
+2. Fuentes externas en formato JSON (por ejemplo, un endpoint de ArgentinaDatos).
+3. Próximamente: scrapers HTML para sitios comparativos como `comparatasas.ar`, `billeterasvirtuales.com.ar` y `rendimientohoy.vercel.app`.
+
+Para usar una fuente externa, definir su URL en:
+
+- `ARGENTINA_DATOS_WALLETS_URL` para una fuente principal.
+- `EXTERNAL_WALLET_SOURCES` para una lista separada por coma.
+
+> Nota: al integrar scraping de terceros, validar Términos de Uso, `robots.txt` y frecuencia de requests para evitar bloqueos.
+
+---
+
+## ✅ ¿Cómo validar que las fuentes externas están funcionando?
+
+1. Configurá al menos una URL en `.env`:
+
+```bash
+ARGENTINA_DATOS_WALLETS_URL=https://tu-endpoint-json
+# o
+EXTERNAL_WALLET_SOURCES=https://fuente1.json,https://fuente2.json
+```
+
+2. Levantá la API y ejecutá una actualización con diagnóstico:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/update?debug=true"
+```
+
+3. Revisá el campo `sources` en la respuesta:
+
+- `status: "ok"` + `fetched > 0` => la fuente aportó datos.
+- `status: "ok"` + `fetched: 0` => la fuente respondió pero no matcheó el formato esperado.
+- `status: "error"` => error de red/formato (ver campo `error`).
+
+4. Confirmá persistencia:
+
+```bash
+curl "http://127.0.0.1:8000/wallets"
 ```
 
 ---

@@ -1,16 +1,18 @@
 from fastapi import APIRouter, HTTPException
 from app.models.wallet_model import Wallet
 from app.services.database import db
-from app.services.updater import update_wallets
+from app.services.updater import update_wallets, update_wallets_with_report
 from typing import List
 import datetime
 
 router = APIRouter()
 wallets_collection = db["wallets"]
 
+
 @router.get("/wallets", response_model=List[Wallet])
 def get_wallets():
     return list(wallets_collection.find({}, {"_id": 0}))
+
 
 @router.get("/wallets/{wallet_id}", response_model=Wallet)
 def get_wallet(wallet_id: str):
@@ -19,7 +21,16 @@ def get_wallet(wallet_id: str):
         raise HTTPException(status_code=404, detail="Billetera no encontrada")
     return wallet
 
+
 @router.post("/update")
-def manual_update():
+def manual_update(debug: bool = False):
+    if debug:
+        report = update_wallets_with_report()
+        return {
+            "updated": report["total"],
+            "timestamp": datetime.datetime.utcnow(),
+            "sources": report["sources"],
+        }
+
     updated = update_wallets()
     return {"updated": len(updated), "timestamp": datetime.datetime.utcnow()}
