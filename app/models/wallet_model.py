@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 import datetime
 
+
 class Wallet(BaseModel):
     id: str
     name: str

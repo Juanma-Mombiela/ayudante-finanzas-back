@@ -7,9 +7,5 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://usuario:password@cluster.mongo
 DB_NAME = os.getenv("DB_NAME", "comparador_tasas")
 COLLECTION_WALLETS = "wallets"
 
+# Optional override for ArgentinaDatos wallet-rate endpoint.
 ARGENTINA_DATOS_WALLETS_URL = os.getenv("ARGENTINA_DATOS_WALLETS_URL", "").strip()
-EXTERNAL_WALLET_SOURCES = [
-    url.strip()
-    for url in os.getenv("EXTERNAL_WALLET_SOURCES", "").split(",")
-    if url.strip()
-]

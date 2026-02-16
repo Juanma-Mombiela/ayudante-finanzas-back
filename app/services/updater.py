@@ -1,12 +1,13 @@
-from app.config import ARGENTINA_DATOS_WALLETS_URL, EXTERNAL_WALLET_SOURCES
+import datetime
+
 from app.services.database import db
-from app.services.scraper import (
-    fetch_wallets_from_json_source,
-    scrape_mercado_pago,
-    scrape_uala,
-)
+from app.services.scraper import get_mercado_pago_rate_candidates
 
 wallets_collection = db["wallets"]
+
+
+FALLBACK_TNA = 54.2
+FALLBACK_SOURCE = "fallback:static"
 
 
 def update_wallets():
@@ -15,70 +16,63 @@ def update_wallets():
 
 
 def update_wallets_with_report():
-    wallets = [scrape_mercado_pago(), scrape_uala()]
-    source_reports = [
-        {"source": "internal:mercado_pago", "status": "ok", "fetched": 1},
-        {"source": "internal:uala", "status": "ok", "fetched": 1},
-    ]
-
-    for url in _external_source_urls():
-        try:
-            fetched_wallets = fetch_wallets_from_json_source(url)
-            wallets.extend(fetched_wallets)
-            source_reports.append(
-                {"source": url, "status": "ok", "fetched": len(fetched_wallets)}
-            )
-        except Exception as exc:
-            source_reports.append(
-                {"source": url, "status": "error", "fetched": 0, "error": str(exc)}
-            )
-
-    wallets = _dedupe_by_id(wallets)
-    for wallet in wallets:
-        wallets_collection.update_one({"id": wallet["id"]}, {"$set": wallet}, upsert=True)
-
-    return {
-        "wallets": wallets,
-        "sources": source_reports,
-        "total": len(wallets),
-    }
+    report = _build_mercado_pago_report()
+    wallet = report["wallets"][0]
+    wallets_collection.update_one({"id": wallet["id"]}, {"$set": wallet}, upsert=True)
+    return report
 
 
 def get_sources_status(probe: bool = False):
-    sources = [
-        {"source": "internal:mercado_pago", "type": "internal", "configured": True},
-        {"source": "internal:uala", "type": "internal", "configured": True},
-    ]
+    if not probe:
+        return {
+            "probe": False,
+            "count": 4,
+            "focus": "mercado_pago",
+            "sources": [
+                {"source": "argentinadatos", "type": "json_api", "status": "not_probed"},
+                {"source": "https://comparatasas.ar/cuentas-billeteras", "type": "scraping_html", "status": "not_probed"},
+                {"source": "https://rendimientohoy.vercel.app/", "type": "scraping_html", "status": "not_probed"},
+                {"source": "https://billeterasvirtuales.com.ar/", "type": "scraping_html", "status": "not_probed"},
+            ],
+        }
 
-    for url in _external_source_urls():
-        entry = {"source": url, "type": "external_json", "configured": True}
-        if probe:
-            try:
-                fetched_wallets = fetch_wallets_from_json_source(url)
-                entry.update({"status": "ok", "fetched": len(fetched_wallets)})
-            except Exception as exc:
-                entry.update({"status": "error", "fetched": 0, "error": str(exc)})
-        else:
-            entry.update({"status": "not_probed"})
-        sources.append(entry)
-
+    report = _build_mercado_pago_report()
     return {
-        "probe": probe,
-        "count": len(sources),
-        "sources": sources,
+        "probe": True,
+        "focus": "mercado_pago",
+        "count": len(report["sources"]),
+        "sources": report["sources"],
+        "computed_tna": report["wallets"][0]["tna"],
+        "method": report["method"],
     }
 
 
-def _external_source_urls():
-    urls = []
-    if ARGENTINA_DATOS_WALLETS_URL:
-        urls.append(ARGENTINA_DATOS_WALLETS_URL)
-    urls.extend(EXTERNAL_WALLET_SOURCES)
-    return urls
+def _build_mercado_pago_report():
+    candidates, source_reports = get_mercado_pago_rate_candidates()
 
+    if candidates:
+        avg_tna = round(sum(item["tna"] for item in candidates) / len(candidates), 2)
+        source_label = ", ".join(item["source"] for item in candidates)
+        method = "argentinadatos" if len(candidates) == 1 and candidates[0]["method"] == "argentinadatos" else "scraping_promedio"
+    else:
+        avg_tna = FALLBACK_TNA
+        source_label = FALLBACK_SOURCE
+        method = "fallback"
 
-def _dedupe_by_id(wallets):
-    deduped = {}
-    for wallet in wallets:
-        deduped[wallet["id"]] = wallet
-    return list(deduped.values())
+    wallet = {
+        "id": "mercado_pago",
+        "name": "Mercado Pago",
+        "tna": avg_tna,
+        "max_amount": 0.0,
+        "currency": "ARS",
+        "category": "cuenta_remunerada",
+        "updated_at": datetime.datetime.utcnow(),
+        "source": source_label,
+    }
+
+    return {
+        "wallets": [wallet],
+        "sources": source_reports,
+        "total": 1,
+        "method": method,
+    }

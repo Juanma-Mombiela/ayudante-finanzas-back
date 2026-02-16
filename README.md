@@ -1,16 +1,16 @@
 # 📘 README - Comparador de Tasas Backend (FastAPI)
 
 ## 🚀 Descripción
-Backend del proyecto **Comparador de Tasas Argentinas**, una API desarrollada con **FastAPI** que centraliza y actualiza información sobre los rendimientos de distintas billeteras virtuales y cuentas remuneradas del país.
+Backend del proyecto **Comparador de Tasas Argentinas**, una API desarrollada con **FastAPI** enfocada actualmente en **Mercado Pago**.
 
-La API expone endpoints públicos para consultar las tasas actualizadas, histórico de rendimientos y estado del sistema. También incluye un servicio de **scraping automatizado** que actualiza los datos periódicamente.
+La API expone endpoints para consultar la tasa de Mercado Pago, actualizar datos y verificar fuentes. La estrategia es: primero intentar ArgentinaDatos; si falla, scrappear 3 sitios y calcular promedio.
 
 ---
 
 ## 🧩 Tecnologías principales
 - **FastAPI** → Framework backend
 - **MongoDB Atlas** → Base de datos NoSQL
-- **Requests + BeautifulSoup** → Scraping de tasas
+- **urllib + regex** → Ingesta JSON y scraping HTML liviano
 - **Uvicorn** → Servidor ASGI
 - **python-dotenv** → Manejo de variables de entorno
 - **CORS Middleware** → Comunicación con frontend (Next.js)
@@ -42,8 +42,6 @@ DB_NAME=comparador_tasas
 # Opcional: fuente JSON externa (ej. ArgentinaDatos)
 ARGENTINA_DATOS_WALLETS_URL=
 
-# Opcional: múltiples endpoints JSON separados por coma
-EXTERNAL_WALLET_SOURCES=
 ```
 
 ### 4️⃣ Ejecutar el servidor localmente
@@ -83,24 +81,24 @@ comparador-tasas-backend/
 
 | Método | Endpoint | Descripción |
 |--------|-----------|--------------|
-| GET | `/wallets` | Devuelve todas las billeteras registradas |
-| GET | `/wallets/{id}` | Devuelve una billetera específica |
-| POST | `/update` | Ejecuta manualmente la actualización de tasas |
-| GET | `/sources/status` | Estado de fuentes configuradas (opcional probe en vivo) |
+| GET | `/wallets` | Devuelve el registro actual de Mercado Pago |
+| GET | `/wallets/{id}` | Devuelve Mercado Pago por id (`mercado_pago`) |
+| POST | `/update` | Ejecuta actualización (ArgentinaDatos o fallback scraping) |
+| GET | `/sources/status` | Estado de fuentes (opcional `probe=true`) |
 | GET | `/status` | Verifica que la API esté operativa |
 
 Ejemplo de respuesta `/wallets`:
 ```json
 [
   {
-    "id": "uala",
-    "name": "Ualá",
-    "tna": 55.0,
-    "max_amount": 500000,
+    "id": "mercado_pago",
+    "name": "Mercado Pago",
+    "tna": 54.2,
+    "max_amount": 0,
     "currency": "ARS",
     "category": "cuenta_remunerada",
     "updated_at": "2025-10-20T15:00:00Z",
-    "source": "https://uala.com.ar"
+    "source": "https://comparatasas.ar/cuentas-billeteras, https://rendimientohoy.vercel.app/"
   }
 ]
 ```
@@ -108,61 +106,54 @@ Ejemplo de respuesta `/wallets`:
 ---
 
 
-## 🌐 Estrategia de fuentes (API + scraping)
+## 🌐 Estrategia de fuentes (solo Mercado Pago)
 
-El backend soporta una estrategia **híbrida**:
+Orden de prioridad:
 
-1. Fuentes base internas (Mercado Pago/Ualá).
-2. Fuentes externas en formato JSON (por ejemplo, un endpoint de ArgentinaDatos).
-3. Próximamente: scrapers HTML para sitios comparativos como `comparatasas.ar`, `billeterasvirtuales.com.ar` y `rendimientohoy.vercel.app`.
+1. **ArgentinaDatos (JSON API)**: se intenta primero.
+2. **Fallback scraping HTML** si no hay dato usable en ArgentinaDatos:
+   - `https://comparatasas.ar/cuentas-billeteras`
+   - `https://rendimientohoy.vercel.app/`
+   - `https://billeterasvirtuales.com.ar/`
+3. Se calcula el **promedio** de las tasas encontradas para Mercado Pago.
+4. Si no se obtiene ninguna tasa, se usa fallback estático para no romper el servicio.
 
-Para usar una fuente externa, definir su URL en:
+Podés configurar un endpoint específico de ArgentinaDatos con:
 
-- `ARGENTINA_DATOS_WALLETS_URL` para una fuente principal.
-- `EXTERNAL_WALLET_SOURCES` para una lista separada por coma.
-
-> Nota: al integrar scraping de terceros, validar Términos de Uso, `robots.txt` y frecuencia de requests para evitar bloqueos.
+- `ARGENTINA_DATOS_WALLETS_URL`
 
 ---
 
-## ✅ ¿Cómo validar que las fuentes externas están funcionando?
+## ✅ ¿Cómo validar que está funcionando?
 
-1. Configurá al menos una URL en `.env`:
+1. Levantá la API:
 
 ```bash
-ARGENTINA_DATOS_WALLETS_URL=https://tu-endpoint-json
-# o
-EXTERNAL_WALLET_SOURCES=https://fuente1.json,https://fuente2.json
+uvicorn app.main:app --reload
 ```
 
-2. Verificá configuración sin pegarle a terceros (rápido):
+2. Revisá estado de fuentes sin requests externos:
 
 ```bash
 curl "http://127.0.0.1:8000/sources/status"
 ```
 
-3. Si querés testear conectividad real de cada fuente, hacé probe en vivo:
+3. Ejecutá probe real a fuentes externas:
 
 ```bash
 curl "http://127.0.0.1:8000/sources/status?probe=true"
 ```
 
-4. Opcionalmente, ejecutá una actualización con diagnóstico:
+4. Forzá actualización y mirá reporte:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/update?debug=true"
 ```
 
-5. Revisá el campo `sources` en la respuesta:
-
-- `status: "ok"` + `fetched > 0` => la fuente aportó datos.
-- `status: "ok"` + `fetched: 0` => la fuente respondió pero no matcheó el formato esperado.
-- `status: "error"` => error de red/formato (ver campo `error`).
-
-6. Confirmá persistencia:
+5. Confirmá dato final guardado:
 
 ```bash
-curl "http://127.0.0.1:8000/wallets"
+curl "http://127.0.0.1:8000/wallets/mercado_pago"
 ```
 
 ---
