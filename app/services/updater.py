@@ -21,12 +21,7 @@ def update_wallets_with_report():
         {"source": "internal:uala", "status": "ok", "fetched": 1},
     ]
 
-    urls = []
-    if ARGENTINA_DATOS_WALLETS_URL:
-        urls.append(ARGENTINA_DATOS_WALLETS_URL)
-    urls.extend(EXTERNAL_WALLET_SOURCES)
-
-    for url in urls:
+    for url in _external_source_urls():
         try:
             fetched_wallets = fetch_wallets_from_json_source(url)
             wallets.extend(fetched_wallets)
@@ -47,6 +42,39 @@ def update_wallets_with_report():
         "sources": source_reports,
         "total": len(wallets),
     }
+
+
+def get_sources_status(probe: bool = False):
+    sources = [
+        {"source": "internal:mercado_pago", "type": "internal", "configured": True},
+        {"source": "internal:uala", "type": "internal", "configured": True},
+    ]
+
+    for url in _external_source_urls():
+        entry = {"source": url, "type": "external_json", "configured": True}
+        if probe:
+            try:
+                fetched_wallets = fetch_wallets_from_json_source(url)
+                entry.update({"status": "ok", "fetched": len(fetched_wallets)})
+            except Exception as exc:
+                entry.update({"status": "error", "fetched": 0, "error": str(exc)})
+        else:
+            entry.update({"status": "not_probed"})
+        sources.append(entry)
+
+    return {
+        "probe": probe,
+        "count": len(sources),
+        "sources": sources,
+    }
+
+
+def _external_source_urls():
+    urls = []
+    if ARGENTINA_DATOS_WALLETS_URL:
+        urls.append(ARGENTINA_DATOS_WALLETS_URL)
+    urls.extend(EXTERNAL_WALLET_SOURCES)
+    return urls
 
 
 def _dedupe_by_id(wallets):

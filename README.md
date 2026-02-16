@@ -86,6 +86,7 @@ comparador-tasas-backend/
 | GET | `/wallets` | Devuelve todas las billeteras registradas |
 | GET | `/wallets/{id}` | Devuelve una billetera específica |
 | POST | `/update` | Ejecuta manualmente la actualización de tasas |
+| GET | `/sources/status` | Estado de fuentes configuradas (opcional probe en vivo) |
 | GET | `/status` | Verifica que la API esté operativa |
 
 Ejemplo de respuesta `/wallets`:
@@ -134,19 +135,31 @@ ARGENTINA_DATOS_WALLETS_URL=https://tu-endpoint-json
 EXTERNAL_WALLET_SOURCES=https://fuente1.json,https://fuente2.json
 ```
 
-2. Levantá la API y ejecutá una actualización con diagnóstico:
+2. Verificá configuración sin pegarle a terceros (rápido):
+
+```bash
+curl "http://127.0.0.1:8000/sources/status"
+```
+
+3. Si querés testear conectividad real de cada fuente, hacé probe en vivo:
+
+```bash
+curl "http://127.0.0.1:8000/sources/status?probe=true"
+```
+
+4. Opcionalmente, ejecutá una actualización con diagnóstico:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/update?debug=true"
 ```
 
-3. Revisá el campo `sources` en la respuesta:
+5. Revisá el campo `sources` en la respuesta:
 
 - `status: "ok"` + `fetched > 0` => la fuente aportó datos.
 - `status: "ok"` + `fetched: 0` => la fuente respondió pero no matcheó el formato esperado.
 - `status: "error"` => error de red/formato (ver campo `error`).
 
-4. Confirmá persistencia:
+6. Confirmá persistencia:
 
 ```bash
 curl "http://127.0.0.1:8000/wallets"

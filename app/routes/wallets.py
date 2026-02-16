@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from app.models.wallet_model import Wallet
 from app.services.database import db
-from app.services.updater import update_wallets, update_wallets_with_report
+from app.services.updater import get_sources_status, update_wallets, update_wallets_with_report
 from typing import List
 import datetime
 
@@ -34,3 +34,8 @@ def manual_update(debug: bool = False):
 
     updated = update_wallets()
     return {"updated": len(updated), "timestamp": datetime.datetime.utcnow()}
+
+
+@router.get("/sources/status")
+def sources_status(probe: bool = False):
+    return get_sources_status(probe=probe)
