@@ -1,20 +1,27 @@
-import json
 import re
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from app.config import ARGENTINA_DATOS_WALLETS_URL
-
-ARGENTINA_DATOS_CANDIDATE_URLS = [
-    "https://api.argentinadatos.com/v1/finanzas/billeteras",
-    "https://api.argentinadatos.com/v1/finanzas/billeteras-virtuales",
-    "https://api.argentinadatos.com/v1/finanzas/tasas-billeteras",
-]
+from app.config import COMPARATASAS_MIRROR_URL
 
 SCRAPING_URLS = [
     "https://comparatasas.ar/cuentas-billeteras",
     "https://rendimientohoy.vercel.app/",
     "https://billeterasvirtuales.com.ar/",
 ]
+MIN_SCRAPED_TNA = 5.0
+RATE_CONTEXT_KEYWORDS = ("tna", "tea", "tasa", "rendimiento")
+ALIAS_WINDOW_BEFORE = 600
+ALIAS_WINDOW_AFTER = 1000
+DEFAULT_HEADERS = {
+    # Some sites return 404/blocked responses to obvious bot user-agents.
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+}
 
 TARGET_WALLETS = {
     "mercado_pago": {"name": "Mercado Pago", "aliases": ["mercado pago"]},
@@ -25,7 +32,7 @@ TARGET_WALLETS = {
 
 
 def get_wallet_rate_candidates(wallet_id: str):
-    """Return wallet rates from ArgentinaDatos first; fallback to HTML scraping sites."""
+    """Return wallet rates from configured HTML scraping sources and let caller average them."""
     wallet_config = TARGET_WALLETS.get(wallet_id)
     if not wallet_config:
         return [], [{"wallet": wallet_id, "source": "internal", "status": "error", "error": "wallet_id no soportado"}]
@@ -33,19 +40,7 @@ def get_wallet_rate_candidates(wallet_id: str):
     aliases = wallet_config["aliases"]
     rates = []
 
-    argentina_datos_result = _fetch_rate_from_argentina_datos(wallet_id, aliases)
-    if argentina_datos_result["status"] == "ok":
-        rates.append(
-            {
-                "wallet": wallet_id,
-                "source": argentina_datos_result["source"],
-                "tna": argentina_datos_result["tna"],
-                "method": "argentinadatos",
-            }
-        )
-        return rates, [argentina_datos_result]
-
-    source_reports = [argentina_datos_result]
+    source_reports = []
 
     for url in SCRAPING_URLS:
         scraped = _scrape_wallet_rate_from_html(url, wallet_id, aliases)
@@ -63,96 +58,54 @@ def get_wallet_rate_candidates(wallet_id: str):
     return rates, source_reports
 
 
-def _fetch_rate_from_argentina_datos(wallet_id: str, aliases):
-    urls = []
-    if ARGENTINA_DATOS_WALLETS_URL:
-        urls.append(ARGENTINA_DATOS_WALLETS_URL)
-    urls.extend(ARGENTINA_DATOS_CANDIDATE_URLS)
-
-    for url in urls:
-        try:
-            payload = _http_get_json(url)
-            tna = _extract_rate_from_payload(payload, aliases)
-            if tna is not None:
-                return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
-            return {
-                "wallet": wallet_id,
-                "source": url,
-                "status": "error",
-                "error": f"{wallet_id} no encontrado en payload JSON",
-            }
-        except Exception as exc:
-            last_error = str(exc)
-
-    return {
-        "wallet": wallet_id,
-        "source": ARGENTINA_DATOS_WALLETS_URL or "argentinadatos:candidates",
-        "status": "error",
-        "error": last_error if "last_error" in locals() else "Sin endpoint configurado",
-    }
-
-
-def _http_get_json(url: str):
-    request = Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (compatible; comparador-tasas-bot/1.0)",
-            "Accept": "application/json,text/plain,*/*",
-        },
-    )
-    with urlopen(request, timeout=15) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
 def _http_get_text(url: str):
-    request = Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (compatible; comparador-tasas-bot/1.0)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-    )
-    with urlopen(request, timeout=15) as response:
-        return response.read().decode("utf-8", errors="ignore")
+    candidates = [url]
+    allow_comparatasas_mirror = False
+    if "comparatasas.ar/cuentas-billeteras" in url:
+        candidates.extend(
+            [
+                "https://comparatasas.ar/cuentas-billeteras/",
+                "https://www.comparatasas.ar/cuentas-billeteras",
+                "https://www.comparatasas.ar/cuentas-billeteras/",
+            ]
+        )
+        allow_comparatasas_mirror = True
 
-
-def _extract_rate_from_payload(payload, aliases):
-    rows = _flatten_payload(payload)
-    for row in rows:
-        if not isinstance(row, dict):
+    last_error = None
+    for candidate_url in candidates:
+        request = Request(
+            candidate_url,
+            headers={
+                **DEFAULT_HEADERS,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                return response.read().decode("utf-8", errors="ignore")
+        except HTTPError as exc:
+            last_error = exc
             continue
-        name = _first_non_empty(row, ["name", "wallet", "billetera", "entidad", "proveedor"])
-        if not name:
-            continue
+        except Exception as exc:
+            last_error = exc
+            break
 
-        name_lower = str(name).lower()
-        if any(alias in name_lower for alias in aliases):
-            rate = _parse_float(
-                _first_non_empty(
-                    row,
-                    ["tna", "tea", "rate", "tasa", "tasa_nominal_anual", "rendimiento"],
-                )
-            )
-            if rate is not None:
-                return rate
-    return None
+    if allow_comparatasas_mirror and COMPARATASAS_MIRROR_URL:
+        request = Request(
+            COMPARATASAS_MIRROR_URL,
+            headers={
+                **DEFAULT_HEADERS,
+                "Accept": "text/plain,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        try:
+            with urlopen(request, timeout=20) as response:
+                return response.read().decode("utf-8", errors="ignore")
+        except Exception as exc:
+            last_error = exc
 
+    raise last_error if last_error else RuntimeError("No se pudo obtener HTML")
 
-def _flatten_payload(payload):
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        for key in ("data", "results", "wallets", "items"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return value
-        nested_rows = []
-        for value in payload.values():
-            if isinstance(value, list):
-                nested_rows.extend(value)
-        if nested_rows:
-            return nested_rows
-    return []
 
 
 def _scrape_wallet_rate_from_html(url: str, wallet_id: str, aliases):
@@ -161,34 +114,128 @@ def _scrape_wallet_rate_from_html(url: str, wallet_id: str, aliases):
     except Exception as exc:
         return {"wallet": wallet_id, "source": url, "status": "error", "error": str(exc)}
 
-    normalized = re.sub(r"\s+", " ", html)
-    lower = normalized.lower()
+    if "rendimientohoy.vercel.app" in url:
+        tna = _scrape_rendimientohoy_from_html(html, aliases)
+        if tna is not None:
+            return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
+        return {
+            "wallet": wallet_id,
+            "source": url,
+            "status": "error",
+            "error": "No se pudo extraer TNA de RendimientoHoy con parser especifico",
+        }
+
+    if "comparatasas.ar/cuentas-billeteras" in url:
+        tna = _scrape_comparatasas_from_html(html, aliases)
+        if tna is not None:
+            return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
+
+    # Search on visible text first (HTML tags removed) to avoid alias/% distances inflated by markup.
+    visible_text = re.sub(r"<[^>]+>", " ", html)
+    searchable_variants = [
+        re.sub(r"\s+", " ", visible_text),
+        re.sub(r"\s+", " ", html),
+    ]
 
     candidates = []
-    for alias in aliases:
-        matches = list(re.finditer(re.escape(alias), lower))
-        for match in matches:
-            start = max(0, match.start() - 220)
-            end = min(len(normalized), match.end() + 320)
-            chunk = normalized[start:end]
-            for number in re.findall(r"(\d{1,3}(?:[\.,]\d{1,2})?)\s*%", chunk):
-                value = _parse_float(number)
-                if value is not None and 1 <= value <= 300:
-                    candidates.append(value)
+    for normalized in searchable_variants:
+        lower = normalized.lower()
+
+        for alias in aliases:
+            matches = list(re.finditer(re.escape(alias), lower))
+            for match in matches:
+                start = max(0, match.start() - ALIAS_WINDOW_BEFORE)
+                end = min(len(normalized), match.end() + ALIAS_WINDOW_AFTER)
+                chunk = normalized[start:end]
+                chunk_lower = chunk.lower()
+                alias_pos_in_chunk = match.start() - start
+                match_candidates = []
+
+                for number_match in re.finditer(r"(\d{1,3}(?:[\.,]\d{1,2})?)\s*%", chunk):
+                    value = _parse_float(number_match.group(1))
+                    # Ignore tiny percentages (cashback/promos/comisiones) that are not TNA.
+                    if value is None or not (MIN_SCRAPED_TNA <= value <= 300):
+                        continue
+
+                    pct_pos = number_match.start()
+                    distance = abs(pct_pos - alias_pos_in_chunk)
+                    is_before_alias = pct_pos < alias_pos_in_chunk
+                    near_start = max(0, pct_pos - 50)
+                    near_end = min(len(chunk_lower), number_match.end() + 50)
+                    near_text = chunk_lower[near_start:near_end]
+                    has_rate_keyword = any(keyword in near_text for keyword in RATE_CONTEXT_KEYWORDS)
+
+                    match_candidates.append(
+                        {
+                            "value": value,
+                            "distance": distance,
+                            "is_before_alias": is_before_alias,
+                            "has_rate_keyword": has_rate_keyword,
+                        }
+                    )
+
+                if match_candidates:
+                    best_for_match = min(
+                        match_candidates,
+                    key=lambda item: (
+                        0 if not item["is_before_alias"] else 1,
+                        0 if item["has_rate_keyword"] else 1,
+                        item["distance"],
+                        item["value"],
+                    ),
+                )
+                    candidates.append(best_for_match["value"])
 
     if not candidates:
         return {"wallet": wallet_id, "source": url, "status": "error", "error": "No se encontró tasa porcentual"}
 
-    # Most pages repeat values; taking min in local context tends to avoid unrelated percentages.
-    tna = min(candidates)
+    # Pages often duplicate the same row; keep the most repeated selected value.
+    tna = max(set(candidates), key=lambda value: (candidates.count(value), -value))
     return {"wallet": wallet_id, "source": url, "status": "ok", "tna": tna}
 
 
-def _first_non_empty(payload, keys):
-    for key in keys:
-        value = payload.get(key)
-        if value is not None and str(value).strip() != "":
-            return value
+def _scrape_rendimientohoy_from_html(html: str, aliases):
+    return _extract_percent_tna_after_alias(html, aliases, search_window=800)
+
+
+def _scrape_comparatasas_from_html(html: str, aliases):
+    # Works for both raw HTML and text mirrors if the row contains "... alias ... 28.75% TNA".
+    return _extract_percent_tna_after_alias(html, aliases, search_window=1200)
+
+
+def _extract_percent_tna_after_alias(html: str, aliases, search_window: int):
+    normalized_variants = [
+        re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)),
+        re.sub(r"\s+", " ", html),
+    ]
+
+    best = None
+    for normalized in normalized_variants:
+        lower = normalized.lower()
+        for alias in aliases:
+            for alias_match in re.finditer(re.escape(alias), lower):
+                start = alias_match.start()
+                tail = normalized[start : min(len(normalized), start + search_window)]
+                tail_lower = tail.lower()
+
+                for rate_match in re.finditer(r"(\d{1,3}(?:[\.,]\d{1,2})?)\s*%\s*tna", tail_lower):
+                    value = _parse_float(rate_match.group(1))
+                    if value is None or value in (0.0, 100.0):
+                        continue
+                    if not (MIN_SCRAPED_TNA <= value <= 300):
+                        continue
+
+                    candidate = {
+                        "value": value,
+                        "distance": rate_match.start(),
+                    }
+                    if best is None or candidate["distance"] < best["distance"]:
+                        best = candidate
+
+                if best is not None:
+                    # Once we found an explicit "% TNA" close to an alias, use it.
+                    return best["value"]
+
     return None
 
 

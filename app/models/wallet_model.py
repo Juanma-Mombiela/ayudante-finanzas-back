@@ -10,4 +10,3 @@ class Wallet(BaseModel):
     currency: str
     category: str
     updated_at: datetime.datetime
-    source: str

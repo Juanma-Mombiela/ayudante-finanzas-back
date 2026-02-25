@@ -7,5 +7,9 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://usuario:password@cluster.mongo
 DB_NAME = os.getenv("DB_NAME", "comparador_tasas")
 COLLECTION_WALLETS = "wallets"
 
-# Optional override for ArgentinaDatos wallet-rate endpoint.
-ARGENTINA_DATOS_WALLETS_URL = os.getenv("ARGENTINA_DATOS_WALLETS_URL", "").strip()
+# Optional mirror/proxy URL for ComparaTasas when Cloudflare blocks backend requests (HTTP 522).
+# Example: https://r.jina.ai/http://comparatasas.ar/cuentas-billeteras
+COMPARATASAS_MIRROR_URL = os.getenv(
+    "COMPARATASAS_MIRROR_URL",
+    "https://r.jina.ai/http://comparatasas.ar/cuentas-billeteras",
+).strip()
